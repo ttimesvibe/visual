@@ -148,19 +148,37 @@ function parseBlocks(text) {
   const lines = text.split("\n");
   const blocks = [];
   let cur = null;
-  const speakerRe = /^(.+?)\s+(\d{1,2}:\d{2}(?::\d{2})?)\s*$/;
+
+  // 패턴 1: "화자명 MM:SS" 줄 끝 (Clova Note 기본)
+  const headerRegex = /^(.+?)\s+(\d{1,2}:\d{2}(?::\d{2})?)\s*$/;
+
   for (const line of lines) {
-    const m = line.match(speakerRe);
+    const trimmed = line.trim();
+    if (!trimmed) {
+      if (cur && cur.text) cur.text += "\n";
+      continue;
+    }
+
+    const m = trimmed.match(headerRegex);
     if (m) {
+      // "화자명 타임스탬프"만 있는 줄 → 새 블록
       if (cur && cur.text.trim()) blocks.push(cur);
       cur = { index: blocks.length, speaker: m[1].trim(), timestamp: m[2], text: "" };
     } else {
-      if (!cur) cur = { index: 0, speaker: "—", timestamp: "0:00", text: "" };
-      cur.text += (cur.text ? "\n" : "") + line;
+      // 인라인: "화자명 타임스탬프 텍스트" (mammoth이 줄을 합칠 때)
+      const inlineMatch = trimmed.match(/^(.+?)\s+(\d{1,2}:\d{2}(?::\d{2})?)\s+(.+)/);
+      if (inlineMatch && inlineMatch[1].length < 20 && !/\d{2}:\d{2}/.test(inlineMatch[1])) {
+        if (cur && cur.text.trim()) blocks.push(cur);
+        cur = { index: blocks.length, speaker: inlineMatch[1].trim(), timestamp: inlineMatch[2], text: inlineMatch[3] };
+      } else if (cur) {
+        cur.text += (cur.text ? "\n" : "") + trimmed;
+      } else {
+        cur = { index: 0, speaker: "—", timestamp: "0:00", text: trimmed };
+      }
     }
   }
   if (cur && cur.text.trim()) blocks.push(cur);
-  return blocks.map((b, i) => ({ ...b, index: i }));
+  return blocks.filter(b => b.text.trim().length > 0).map((b, i) => ({ ...b, index: i, text: b.text.trim() }));
 }
 
 // ═══════════════════════════════════════
