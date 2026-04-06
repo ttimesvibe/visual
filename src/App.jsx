@@ -1,9 +1,35 @@
-import { useState, useRef, useCallback, useMemo } from "react";
+import { useState, useRef, useCallback, useMemo, useEffect } from "react";
 
 // ═══════════════════════════════════════
 // CONFIG
 // ═══════════════════════════════════════
 const WORKER_URL = "https://visual.ttimes.workers.dev";
+const AUTOSAVE_INTERVAL = 3 * 60 * 1000; // 3분
+
+// 시각화 카테고리 (재생성 시 선택)
+const VIS_CATEGORIES = [
+  { value: "", label: "🎯 AI 자동 선택" },
+  { value: "bar", label: "📊 막대 차트" },
+  { value: "bar_horizontal", label: "📊 수평 막대" },
+  { value: "line", label: "📈 라인 차트" },
+  { value: "donut", label: "🍩 도넛/파이" },
+  { value: "kpi", label: "🔢 KPI 숫자" },
+  { value: "table", label: "📋 표" },
+  { value: "comparison", label: "⚖️ 비교" },
+  { value: "ranking", label: "🏆 랭킹" },
+  { value: "process", label: "🔄 프로세스" },
+  { value: "timeline", label: "📅 타임라인" },
+  { value: "structure", label: "🧱 구조도" },
+  { value: "cycle", label: "♻️ 순환" },
+  { value: "matrix", label: "📐 매트릭스" },
+  { value: "hierarchy", label: "🌳 계층도" },
+  { value: "radar", label: "🕸 레이더" },
+  { value: "venn", label: "⭕ 벤 다이어그램" },
+  { value: "network", label: "🔗 네트워크" },
+  { value: "stack", label: "📚 스택" },
+  { value: "progress", label: "📏 진행률" },
+  { value: "checklist", label: "☑️ 체크리스트" },
+];
 const C = {
   bg: "#0f1117", sf: "#1a1d27", bd: "#2a2d3a", tx: "#e4e4e7",
   txM: "#a1a1aa", txD: "#71717a", ac: "#4A6CF7", acS: "rgba(74,108,247,0.12)",
@@ -481,9 +507,6 @@ function InsertCutCard({ item, active, onClick, verdict, onVerdict, onRegenerate
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
         <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 3, background: "rgba(245,158,11,0.12)", color: "#F59E0B" }}>{typeLabel}</span>
         <span style={{ fontSize: 11, fontWeight: 600, color: C.tx, flex: 1, textDecoration: isDiscarded ? "line-through" : "none" }}>{item.title}</span>
-        <button onClick={e => { e.stopPropagation(); onRegenerate?.(); }} disabled={busy}
-          title="이 카드 재생성"
-          style={{ fontSize: 9, fontWeight: 600, padding: "2px 6px", borderRadius: 4, cursor: busy ? "not-allowed" : "pointer", border: `1px solid ${C.bd}`, background: "rgba(255,255,255,0.04)", color: C.txD, flexShrink: 0 }}>🔄</button>
       </div>
       {/* Reason */}
       {item.reason && <div style={{ fontSize: 10, color: C.txD, marginBottom: 6 }}>{item.reason}</div>}
@@ -508,8 +531,11 @@ function InsertCutCard({ item, active, onClick, verdict, onVerdict, onRegenerate
         블록 #{blockIdx}~#{(item.block_range || [])[1] || blockIdx}
         {item.duration_seconds && <span style={{ marginLeft: 8 }}>⏱ {item.duration_seconds}초</span>}
       </div>
-      {/* Verdict buttons */}
-      <div style={{ display: "flex", gap: 3, marginTop: 6, justifyContent: "flex-end" }}>
+      {/* Regenerate + Verdict row */}
+      <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 8, paddingTop: 6, borderTop: `1px solid ${C.bd}44` }}>
+        <button onClick={e => { e.stopPropagation(); onRegenerate?.(); }} disabled={busy}
+          style={{ fontSize: 10, fontWeight: 600, padding: "4px 10px", borderRadius: 5, border: "none", cursor: busy ? "not-allowed" : "pointer", background: "rgba(245,158,11,0.7)", color: "#fff", whiteSpace: "nowrap" }}>🔄 재생성</button>
+        <div style={{ flex: 1 }} />
         {[{ k: "use", l: "사용", c: C.ok, bg: "rgba(34,197,94,0.15)" }, { k: "discard", l: "폐기", c: C.err, bg: "rgba(239,68,68,0.15)" }].map(o =>
           <button key={o.k} onClick={e => { e.stopPropagation(); onVerdict?.(o.k); }}
             style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 4, cursor: "pointer", transition: "all 0.1s", border: `1px solid ${verdict === o.k ? o.c : "transparent"}`, background: verdict === o.k ? o.bg : "rgba(255,255,255,0.04)", color: verdict === o.k ? o.c : C.txD }}>{o.l}</button>
@@ -650,8 +676,8 @@ export default function App() {
     finally { setBusy(false); }
   }, [textSel, blocks, clearTextSel]);
 
-  // ── Per-card regenerate ──
-  const handleRegenerate = useCallback(async (item, mode) => {
+  // ── Per-card regenerate (with optional category) ──
+  const handleRegenerate = useCallback(async (item, mode, preferredType) => {
     setBusy(true); setErr(null);
     const range = item.block_range || [0, 0];
     const rangeBlocks = blocks.filter(b => b.index >= range[0] && b.index <= (range[1] || range[0]));
@@ -660,8 +686,11 @@ export default function App() {
     const key = mode === "visuals" ? "visual_guides" : "insert_cuts";
     const label = mode === "visuals" ? "📊 시각화" : "🎬 인서트 컷";
     try {
-      setProg(`🔄 ${label} 재생성 중 (블록 #${range[0]}~#${range[1] || range[0]})...`);
-      const d = await apiCall(endpoint, { blocks: rangeBlocks });
+      const typeLabel = preferredType ? ` (${preferredType})` : "";
+      setProg(`🔄 ${label} 재생성 중${typeLabel} (블록 #${range[0]}~#${range[1] || range[0]})...`);
+      const payload = { blocks: rangeBlocks };
+      if (preferredType) payload.preferred_type = preferredType;
+      const d = await apiCall(endpoint, payload);
       const newItems = (d.result?.[key] || []).map((v, i) => ({ ...v, id: Date.now() + i }));
       if (newItems.length === 0) { setProg("⚠ 재생성 결과 없음"); setBusy(false); return; }
       const vKey = mode === "visuals" ? `vis-${item.id}` : `ic-${item.id}`;
@@ -687,6 +716,87 @@ export default function App() {
   // ── Clear all ──
   const handleClear = useCallback(() => {
     setVisualGuides([]); setInsertCuts([]); setVerdicts({}); setProg("");
+  }, []);
+
+  // ═══════════════════════════════════════
+  // SESSION / AUTOSAVE
+  // ═══════════════════════════════════════
+  const [sessionId, setSessionId] = useState(null);
+  const [autoSaveStatus, setAutoSaveStatus] = useState(""); // "" | "pending" | "saving" | "saved"
+  const autoSaveTimer = useRef(null);
+  const lastSavedRef = useRef(null);
+
+  // Gather current state for saving
+  const gatherState = useCallback(() => ({
+    blocks, visualGuides, insertCuts, verdicts, inputText,
+  }), [blocks, visualGuides, insertCuts, verdicts, inputText]);
+
+  // Save to KV
+  const saveToKV = useCallback(async (isAuto = false) => {
+    const state = gatherState();
+    if (!state.blocks || state.blocks.length === 0) return;
+    const stateJson = JSON.stringify(state);
+    if (stateJson === lastSavedRef.current) return; // no change
+    try {
+      if (!isAuto) setProg("💾 저장 중...");
+      setAutoSaveStatus("saving");
+      const payload = { ...state };
+      if (sessionId) payload.id = sessionId;
+      const r = await apiCall("/save", payload);
+      if (r.id && !sessionId) setSessionId(r.id);
+      lastSavedRef.current = stateJson;
+      setAutoSaveStatus("saved");
+      if (!isAuto) setProg("✅ 저장 완료");
+      setTimeout(() => setAutoSaveStatus(""), 5000);
+    } catch (e) {
+      setAutoSaveStatus("");
+      if (!isAuto) setErr(`저장 실패: ${e.message}`);
+    }
+  }, [gatherState, sessionId]);
+
+  // Autosave timer: reset on state change
+  useEffect(() => {
+    if (!loaded || blocks.length === 0) return;
+    if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+    setAutoSaveStatus("pending");
+    autoSaveTimer.current = setTimeout(() => {
+      saveToKV(true);
+    }, AUTOSAVE_INTERVAL);
+    return () => { if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current); };
+  }, [visualGuides, insertCuts, verdicts, loaded]);
+
+  // Share URL
+  const handleShare = useCallback(async () => {
+    await saveToKV(false);
+    const id = sessionId;
+    if (id) {
+      const url = `${window.location.origin}${window.location.pathname}?s=${id}`;
+      navigator.clipboard.writeText(url);
+      setProg(`🔗 공유 URL 복사됨: ${url}`);
+    }
+  }, [saveToKV, sessionId]);
+
+  // Load from URL on mount
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const sid = params.get("s");
+    if (!sid) return;
+    (async () => {
+      try {
+        setProg("📥 세션 불러오는 중...");
+        const r = await fetch(`${WORKER_URL}/load/${sid}`);
+        const d = await r.json();
+        if (d.error) { setErr(d.error); return; }
+        if (d.blocks) { setBlocks(d.blocks); setLoaded(true); }
+        if (d.inputText) setInputText(d.inputText);
+        if (d.visualGuides) setVisualGuides(d.visualGuides);
+        if (d.insertCuts) setInsertCuts(d.insertCuts);
+        if (d.verdicts) setVerdicts(d.verdicts);
+        setSessionId(sid);
+        lastSavedRef.current = JSON.stringify(d);
+        setProg("✅ 세션 불러옴");
+      } catch (e) { setErr(`세션 로드 실패: ${e.message}`); }
+    })();
   }, []);
 
   // ── Inline cards for left panel ──
@@ -737,7 +847,7 @@ export default function App() {
     <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 20px", height: 52, borderBottom: `1px solid ${C.bd}`, background: C.sf, flexShrink: 0 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <span style={{ fontSize: 18, fontWeight: 800 }}><span style={{ color: C.ac }}>V</span>isual Guide</span>
-        <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 3, fontWeight: 600, background: "rgba(34,197,94,0.15)", color: C.ok }}>v2.0</span>
+        <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 3, fontWeight: 600, background: "rgba(34,197,94,0.15)", color: C.ok }}>v2.1</span>
       </div>
       {/* Tab selector */}
       <div style={{ display: "flex", gap: 2, background: "rgba(255,255,255,0.04)", borderRadius: 7, padding: 2 }}>
@@ -749,6 +859,12 @@ export default function App() {
         )}
       </div>
       <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+        {autoSaveStatus && <span style={{ fontSize: 10, color: autoSaveStatus === "saved" ? C.ok : autoSaveStatus === "saving" ? C.ac : C.txD }}>
+          {autoSaveStatus === "pending" ? "⏳ 자동저장 대기" : autoSaveStatus === "saving" ? "💾 저장 중..." : "✓ 저장됨"}
+        </span>}
+        <button onClick={handleShare} disabled={busy || blocks.length === 0} style={{ fontSize: 11, padding: "4px 10px", borderRadius: 5, border: `1px solid ${C.ac}44`, background: C.acS, color: C.ac, cursor: "pointer", fontWeight: 600 }}>
+          {sessionId ? "↑ 업데이트" : "🔗 공유"}
+        </button>
         {(visualGuides.length > 0 || insertCuts.length > 0) && <button onClick={handleClear} style={{ fontSize: 11, padding: "4px 10px", borderRadius: 5, border: `1px solid ${C.bd}`, background: "transparent", color: C.txD, cursor: "pointer" }}>🗑 초기화</button>}
         <button onClick={() => { setLoaded(false); setBlocks([]); handleClear(); }} style={{ fontSize: 11, padding: "4px 10px", borderRadius: 5, border: `1px solid ${C.bd}`, background: "transparent", color: C.txD, cursor: "pointer" }}>← 다시 입력</button>
       </div>
@@ -836,9 +952,6 @@ export default function App() {
                   <span style={{ fontSize: 13 }}>📊</span>
                   <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 3, background: `${v.priority === "high" ? "#EF4444" : v.priority === "medium" ? "#F59E0B" : "#94A3B8"}22`, color: v.priority === "high" ? "#EF4444" : v.priority === "medium" ? "#F59E0B" : "#94A3B8", textTransform: "uppercase" }}>{v.priority}</span>
                   <span style={{ fontSize: 11, fontWeight: 600, color: C.tx, flex: 1, textDecoration: vd === "discard" ? "line-through" : "none" }}>{v.title}</span>
-                  <button onClick={e => { e.stopPropagation(); handleRegenerate(v, "visuals"); }} disabled={busy}
-                    title="이 카드 재생성"
-                    style={{ fontSize: 9, fontWeight: 600, padding: "2px 6px", borderRadius: 4, cursor: busy ? "not-allowed" : "pointer", border: `1px solid ${C.bd}`, background: "rgba(255,255,255,0.04)", color: C.txD, flexShrink: 0 }}>🔄</button>
                   <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 3, background: "rgba(59,130,246,0.12)", color: "#3B82F6", fontWeight: 600 }}>{v.type}</span>
                 </div>
                 {v.reason && <div style={{ fontSize: 10, color: C.txD, marginBottom: 4 }}>{v.reason}</div>}
@@ -846,6 +959,17 @@ export default function App() {
                 <div style={{ fontSize: 10, color: isActive ? "#3B82F6" : C.txD, marginTop: 6, fontWeight: isActive ? 600 : 400 }}>
                   블록 #{blockIdx}~#{(v.block_range || [])[1] || blockIdx}
                   {v.duration_seconds && <span style={{ marginLeft: 8 }}>⏱ {v.duration_seconds}초</span>}
+                </div>
+                {/* Regenerate row with category */}
+                <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 8, padding: "6px 0", borderTop: `1px solid ${C.bd}44` }}>
+                  <select onClick={e => e.stopPropagation()} onChange={e => { e.stopPropagation(); handleRegenerate(v, "visuals", e.target.value || undefined); e.target.value = ""; }}
+                    disabled={busy} value=""
+                    style={{ fontSize: 10, padding: "4px 6px", borderRadius: 5, border: `1px solid ${C.ac}44`, background: C.acS, color: C.ac, cursor: busy ? "not-allowed" : "pointer", fontWeight: 600, flex: 1, outline: "none", fontFamily: FN }}>
+                    <option value="" disabled>🔄 다른 형식으로 재생성...</option>
+                    {VIS_CATEGORIES.map(cat => <option key={cat.value} value={cat.value}>{cat.label}</option>)}
+                  </select>
+                  <button onClick={e => { e.stopPropagation(); handleRegenerate(v, "visuals"); }} disabled={busy}
+                    style={{ fontSize: 10, fontWeight: 600, padding: "4px 10px", borderRadius: 5, border: "none", cursor: busy ? "not-allowed" : "pointer", background: "rgba(59,130,246,0.7)", color: "#fff", whiteSpace: "nowrap" }}>🔄 재생성</button>
                 </div>
                 {/* Verdict buttons */}
                 <div style={{ display: "flex", gap: 3, marginTop: 6, justifyContent: "flex-end" }}>
