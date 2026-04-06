@@ -1039,7 +1039,7 @@ export default function App() {
           {sessionId ? "↑ 업데이트" : "🔗 공유"}
         </button>
         {(visualGuides.length > 0 || insertCuts.length > 0) && <button onClick={handleClear} style={{ fontSize: 11, padding: "4px 10px", borderRadius: 5, border: `1px solid ${C.bd}`, background: "transparent", color: C.txD, cursor: "pointer" }}>🗑 초기화</button>}
-        <button onClick={() => { setLoaded(false); setBlocks([]); setFn(""); setParagraphs(null); handleClear(); }} style={{ fontSize: 11, padding: "4px 10px", borderRadius: 5, border: `1px solid ${C.bd}`, background: "transparent", color: C.txD, cursor: "pointer" }}>← 다시 입력</button>
+        <button onClick={() => { setLoaded(false); setBlocks([]); setFn(""); setParagraphs(null); setInputText(""); setSessionId(null); setAutoSaveStatus(""); window.history.replaceState({}, "", window.location.pathname); handleClear(); }} style={{ fontSize: 11, padding: "4px 10px", borderRadius: 5, border: `1px solid ${C.bd}`, background: "transparent", color: C.txD, cursor: "pointer" }}>← 다시 입력</button>
       </div>
     </header>
 
