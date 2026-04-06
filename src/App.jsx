@@ -123,7 +123,7 @@ function FileUploader({ onFileLoad, busy }) {
       onClick={() => inputRef.current?.click()}
       style={{
         border: `2px dashed ${dragging ? C.ac : C.bd}`,
-        borderRadius: 16, padding: "48px 32px", textAlign: "center",
+        borderRadius: 16, padding: "32px 32px", textAlign: "center",
         cursor: busy ? "not-allowed" : "pointer",
         background: dragging ? C.acS : "transparent",
         transition: "all 0.2s",
