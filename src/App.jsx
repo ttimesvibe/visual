@@ -556,6 +556,7 @@ export default function App() {
   const [autoSaveStatus, setAutoSaveStatus] = useState("");
   const autoSaveTimer = useRef(null);
   const lastSavedRef = useRef(null);
+  const [sessions, setSessions] = useState(null); // 세션 목록
 
   // 텍스트 선택 기반 구간 추천
   const [textSel, setTextSel] = useState(null);
@@ -565,7 +566,7 @@ export default function App() {
   const bEls = useRef({});
   const cEls = useRef({});
 
-  // ── 앱 마운트 시 URL ?s= 파라미터로 세션 로드 ──
+  // ── 앱 마운트 시 URL ?s= 파라미터로 세션 로드 + 세션 목록 로드 ──
   useState(() => {
     const params = new URLSearchParams(window.location.search);
     const sid = params.get("s");
@@ -577,11 +578,45 @@ export default function App() {
         setInsertCuts(data.insertCuts || []);
         setVerdicts(data.verdicts || {});
         setTab(data.tab || "visuals");
+        setFn(data.fn || "");
         setLoaded(true);
         setSessionId(sid);
+        lastSavedRef.current = JSON.stringify(data);
       }).catch(() => {});
     }
+    // 세션 목록 로드
+    fetch(`${WORKER_URL}/sessions`).then(r=>r.json()).then(d=>{
+      if(d.sessions) setSessions(d.sessions);
+    }).catch(()=>{});
   });
+
+  // 세션 불러오기
+  const loadSession = useCallback(async (sid) => {
+    setErr(null); setProg("📥 세션 불러오는 중...");
+    try {
+      const r = await fetch(`${WORKER_URL}/load/${sid}`);
+      const data = await r.json();
+      if (data.error) { setErr(data.error); setProg(""); return; }
+      setBlocks(data.blocks || []);
+      setVisualGuides(data.visualGuides || []);
+      setInsertCuts(data.insertCuts || []);
+      setVerdicts(data.verdicts || {});
+      setTab(data.tab || "visuals");
+      setFn(data.fn || "");
+      setLoaded(true);
+      setSessionId(sid);
+      lastSavedRef.current = JSON.stringify(data);
+      window.history.replaceState({}, "", `${window.location.pathname}?s=${sid}`);
+      setProg("✅ 세션 불러옴");
+    } catch (e) { setErr(`세션 로드 실패: ${e.message}`); setProg(""); }
+  }, []);
+
+  const deleteSession = useCallback(async (sid) => {
+    try {
+      await fetch(`${WORKER_URL}/session-delete`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({id:sid}) });
+      setSessions(prev => prev?.filter(s => s.id !== sid));
+    } catch {}
+  }, []);
 
   // 공유 (저장 + URL 생성)
   const handleShare = useCallback(async () => {
@@ -884,6 +919,31 @@ export default function App() {
                 color:inputText.trim()?"#fff":C.txD,fontSize:15,fontWeight:700,cursor:inputText.trim()?"pointer":"not-allowed",
                 boxShadow:inputText.trim()?"0 4px 16px rgba(74,108,247,0.3)":"none"}}>
               텍스트로 시작</button>
+            {/* 저장된 세션 목록 */}
+            {sessions && sessions.length > 0 && <>
+              <div style={{margin:"20px 0 10px",display:"flex",alignItems:"center",gap:12}}>
+                <div style={{flex:1,height:1,background:C.bd}}/><span style={{fontSize:11,color:C.txD}}>저장된 세션</span><div style={{flex:1,height:1,background:C.bd}}/>
+              </div>
+              <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                {sessions.slice(0,10).map(s => (
+                  <div key={s.id} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 12px",borderRadius:8,
+                    border:`1px solid ${C.bd}`,background:C.sf,cursor:"pointer",transition:"all 0.15s"}}
+                    onClick={()=>loadSession(s.id)}
+                    onMouseEnter={e=>e.currentTarget.style.borderColor=C.ac}
+                    onMouseLeave={e=>e.currentTarget.style.borderColor=C.bd}>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:13,fontWeight:600,color:C.tx}}>{s.fn||"제목 없음"}</div>
+                      <div style={{fontSize:10,color:C.txD,marginTop:2}}>
+                        {s.blockCount}블록 · 시각화 {s.visCount||0}건 · 인서트 {s.icCount||0}건
+                        {s.savedAt && <span style={{marginLeft:8}}>{new Date(s.savedAt).toLocaleString("ko-KR",{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"})}</span>}
+                      </div>
+                    </div>
+                    <button onClick={e=>{e.stopPropagation();deleteSession(s.id)}}
+                      style={{fontSize:10,padding:"2px 6px",borderRadius:4,border:`1px solid ${C.bd}`,background:"transparent",color:C.txD,cursor:"pointer"}}>✕</button>
+                  </div>
+                ))}
+              </div>
+            </>}
           </div>
         </div>
       ) : (
