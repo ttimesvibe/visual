@@ -706,7 +706,7 @@ export default function App() {
 
   const scrollTo = useCallback((blockIdx) => {
     setABlock(blockIdx);
-    const HEADER_H = 40; // sticky 헤더 높이
+    const HEADER_H = 40;
     const bEl = bEls.current[blockIdx];
     if (bEl && lRef.current) {
       const cr = lRef.current.getBoundingClientRect();
@@ -714,12 +714,15 @@ export default function App() {
       const target = er.top - cr.top + lRef.current.scrollTop - HEADER_H - 20;
       lRef.current.scrollTo({ top: Math.max(0, target), behavior: 'smooth' });
     }
-    const cEl = cEls.current[blockIdx];
-    if (cEl && rRef.current) {
-      const cr = rRef.current.getBoundingClientRect();
-      const er = cEl.getBoundingClientRect();
-      const target = er.top - cr.top + rRef.current.scrollTop - HEADER_H - 60;
-      rRef.current.scrollTo({ top: Math.max(0, target), behavior: 'smooth' });
+    // 오른쪽: blockIdx에 해당하는 카드 찾기 (data-card-block 속성으로)
+    if (rRef.current) {
+      const cardEl = rRef.current.querySelector(`[data-card-block="${blockIdx}"]`);
+      if (cardEl) {
+        const cr = rRef.current.getBoundingClientRect();
+        const er = cardEl.getBoundingClientRect();
+        const target = er.top - cr.top + rRef.current.scrollTop - HEADER_H - 20;
+        rRef.current.scrollTo({ top: Math.max(0, target), behavior: 'smooth' });
+      }
     }
   }, []);
 
@@ -1003,6 +1006,7 @@ export default function App() {
                   const borderC=vd==="use"?"#22C55E":vd==="discard"?"rgba(239,68,68,0.4)":isActive?"#3B82F6":C.bd;
                   const cardBg=vd==="discard"?"rgba(239,68,68,0.05)":isActive?"rgba(59,130,246,0.08)":C.sf;
                   return <div key={`v-${v.id||i}`} ref={el=>{if(el&&!cEls.current[blockIdx])cEls.current[blockIdx]=el}}
+                    data-card-block={blockIdx}
                     onClick={()=>scrollTo(blockIdx)}
                     style={{border:`1px solid ${borderC}`,borderRadius:10,padding:"10px 12px",marginBottom:8,
                       background:cardBg,cursor:"pointer",transition:"all 0.15s",opacity:vd==="discard"?0.5:1,
@@ -1048,7 +1052,8 @@ export default function App() {
                 {insertCuts.map((ic,i)=>{
                   const blockIdx=(ic.block_range||[])[0];
                   const vKey=`ic-${ic.id}`; const vd=verdicts[vKey]||null;
-                  return <div key={`ic-${ic.id||i}`} ref={el=>{if(el&&!cEls.current[blockIdx])cEls.current[blockIdx]=el}}>
+                  return <div key={`ic-${ic.id||i}`} ref={el=>{if(el&&!cEls.current[blockIdx])cEls.current[blockIdx]=el}}
+                    data-card-block={blockIdx}>
                     <InsertCutCard item={ic} active={aBlock===blockIdx} onClick={scrollTo}
                       verdict={vd} onVerdict={v=>setVerdicts(prev=>({...prev,[vKey]:vd===v?null:v}))}
                       onRegenerate={()=>handleRegenerate(ic,"inserts")} busy={busy}/></div>;
