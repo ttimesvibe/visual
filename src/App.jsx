@@ -1,4 +1,6 @@
 import { useState, useRef, useCallback, useMemo, useEffect } from "react";
+import * as mammoth from "mammoth";
+import JSZip from "jszip";
 
 // ═══════════════════════════════════════
 // CONFIG
@@ -52,6 +54,92 @@ async function apiCall(endpoint, body) {
   return d;
 }
 function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// ═══════════════════════════════════════
+// DOCX 삭제선 파싱 (w:del → w:delText)
+// ═══════════════════════════════════════
+async function parseDocxWithTrackChanges(arrayBuffer) {
+  const zip = await JSZip.loadAsync(arrayBuffer);
+  const docXml = await zip.file("word/document.xml")?.async("string");
+  if (!docXml) throw new Error("word/document.xml을 찾을 수 없습니다");
+
+  const bodyMatch = docXml.match(/<w:body[^>]*>([\s\S]*?)<\/w:body>/);
+  if (!bodyMatch) throw new Error("문서 본문을 찾을 수 없습니다");
+  const bodyXml = bodyMatch[1];
+
+  const paragraphs = [];
+  const pRegex = /<w:p[ >][\s\S]*?<\/w:p>/g;
+  let pMatch;
+  while ((pMatch = pRegex.exec(bodyXml)) !== null) {
+    const pXml = pMatch[0];
+    const segments = [];
+    const tokenRegex = /<w:del\b[^>]*>([\s\S]*?)<\/w:del>|<w:ins\b[^>]*>([\s\S]*?)<\/w:ins>|<w:r[ >]([\s\S]*?)<\/w:r>/g;
+    let tMatch;
+    while ((tMatch = tokenRegex.exec(pXml)) !== null) {
+      if (tMatch[1] !== undefined) {
+        // w:del block — extract w:delText
+        const delTexts = tMatch[1].match(/<w:delText[^>]*>([\s\S]*?)<\/w:delText>/g) || [];
+        const text = delTexts.map(dt => dt.replace(/<[^>]+>/g, "")).join("");
+        if (text) segments.push({ text, deleted: true });
+      } else if (tMatch[2] !== undefined) {
+        // w:ins block
+        const insTexts = tMatch[2].match(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g) || [];
+        const text = insTexts.map(t => t.replace(/<[^>]+>/g, "")).join("");
+        if (text) segments.push({ text, deleted: false });
+      } else if (tMatch[3] !== undefined) {
+        // normal w:r
+        const texts = tMatch[3].match(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g) || [];
+        const text = texts.map(t => t.replace(/<[^>]+>/g, "")).join("");
+        if (text) segments.push({ text, deleted: false });
+      }
+    }
+    if (segments.length > 0) paragraphs.push(segments);
+  }
+
+  const hasTrackChanges = paragraphs.some(p => p.some(s => s.deleted));
+  const fullText = paragraphs.map(p => p.map(s => s.text).join("")).join("\n");
+  const cleanText = paragraphs.map(p => p.filter(s => !s.deleted).map(s => s.text).join("")).join("\n");
+
+  return { hasTrackChanges, fullText, cleanText, paragraphs };
+}
+
+// ═══════════════════════════════════════
+// FILE UPLOADER COMPONENT
+// ═══════════════════════════════════════
+function FileUploader({ onFileLoad, busy }) {
+  const [dragging, setDragging] = useState(false);
+  const inputRef = useRef(null);
+
+  const handleFile = useCallback(async (file) => {
+    if (!file) return;
+    onFileLoad(file);
+  }, [onFileLoad]);
+
+  return (
+    <div
+      onDragOver={e => { e.preventDefault(); setDragging(true); }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={e => { e.preventDefault(); setDragging(false); handleFile(e.dataTransfer.files[0]); }}
+      onClick={() => inputRef.current?.click()}
+      style={{
+        border: `2px dashed ${dragging ? C.ac : C.bd}`,
+        borderRadius: 16, padding: "48px 32px", textAlign: "center",
+        cursor: busy ? "not-allowed" : "pointer",
+        background: dragging ? C.acS : "transparent",
+        transition: "all 0.2s",
+      }}>
+      <input ref={inputRef} type="file" accept=".docx,.txt" style={{ display: "none" }}
+        onChange={e => handleFile(e.target.files[0])} />
+      <div style={{ fontSize: 40, marginBottom: 12 }}>📄</div>
+      <div style={{ fontSize: 15, fontWeight: 600, color: C.tx, marginBottom: 6 }}>
+        .docx 또는 .txt 파일을 드래그하거나 클릭하여 업로드
+      </div>
+      <div style={{ fontSize: 12, color: C.txD }}>
+        Word 검토 모드의 삭제선(취소선)을 자동 인식합니다
+      </div>
+    </div>
+  );
+}
 
 // ═══════════════════════════════════════
 // BLOCK PARSER (ttimes-doctor 호환)
@@ -560,6 +648,8 @@ export default function App() {
   const [loaded, setLoaded] = useState(false);
   const [aBlock, setABlock] = useState(null);
   const [verdicts, setVerdicts] = useState({});
+  const [fn, setFn] = useState("");
+  const [paragraphs, setParagraphs] = useState(null); // docx track-changes [{text, deleted}][]
 
   // Text selection state
   const [textSel, setTextSel] = useState(null); // { text, blockIndices }
@@ -604,13 +694,72 @@ export default function App() {
     setTextSel({ text, blockIndices });
   }, []);
 
-  // ── Load blocks ──
+  // ── File upload handler ──
+  const onFileUpload = useCallback(async (file) => {
+    if (!file) return;
+    setErr(null);
+    setProg("📄 파일 읽는 중...");
+
+    try {
+      if (file.name.endsWith(".docx")) {
+        const buf = await file.arrayBuffer();
+        // Try track-changes parsing first
+        try {
+          const tcResult = await parseDocxWithTrackChanges(buf.slice(0));
+          if (tcResult.hasTrackChanges) {
+            setParagraphs(tcResult.paragraphs);
+            const parsed = parseBlocks(tcResult.cleanText);
+            if (parsed.length === 0) { setErr("블록을 파싱할 수 없습니다."); setProg(""); return; }
+            setBlocks(parsed);
+            setInputText(tcResult.cleanText);
+            setFn(file.name);
+            setLoaded(true);
+            setVisualGuides([]); setInsertCuts([]); setVerdicts({});
+            setProg(`✅ ${file.name} — 삭제선 감지됨 (${parsed.length}블록)`);
+            return;
+          }
+        } catch (e) {
+          console.warn("삭제선 파싱 실패, mammoth fallback:", e.message);
+        }
+        // No track changes — use mammoth
+        const res = await mammoth.extractRawText({ arrayBuffer: buf });
+        const parsed = parseBlocks(res.value);
+        if (parsed.length === 0) { setErr("블록을 파싱할 수 없습니다."); setProg(""); return; }
+        setBlocks(parsed);
+        setInputText(res.value);
+        setFn(file.name);
+        setParagraphs(null);
+        setLoaded(true);
+        setVisualGuides([]); setInsertCuts([]); setVerdicts({});
+        setProg(`✅ ${file.name} — ${parsed.length}블록`);
+      } else {
+        // txt file
+        const text = await file.text();
+        const parsed = parseBlocks(text);
+        if (parsed.length === 0) { setErr("블록을 파싱할 수 없습니다."); setProg(""); return; }
+        setBlocks(parsed);
+        setInputText(text);
+        setFn(file.name);
+        setParagraphs(null);
+        setLoaded(true);
+        setVisualGuides([]); setInsertCuts([]); setVerdicts({});
+        setProg(`✅ ${file.name} — ${parsed.length}블록`);
+      }
+    } catch (e) {
+      setErr(`파일 처리 실패: ${e.message}`);
+      setProg("");
+    }
+  }, []);
+
+  // ── Text input fallback ──
   const handleLoad = useCallback(() => {
     const parsed = parseBlocks(inputText);
     if (parsed.length === 0) { setErr("블록을 파싱할 수 없습니다."); return; }
     setBlocks(parsed);
     setLoaded(true);
     setErr(null);
+    setFn("");
+    setParagraphs(null);
     setVisualGuides([]);
     setInsertCuts([]);
     setVerdicts({});
@@ -828,13 +977,19 @@ export default function App() {
     return <div style={{ height: "100vh", background: C.bg, color: C.tx, fontFamily: FN, display: "flex", alignItems: "center", justifyContent: "center" }}>
       <div style={{ width: 600, maxWidth: "90%" }}>
         <h1 style={{ fontSize: 24, fontWeight: 800, marginBottom: 8 }}><span style={{ color: C.ac }}>V</span>isual Guide</h1>
-        <p style={{ fontSize: 13, color: C.txM, marginBottom: 16 }}>교정본 텍스트를 붙여넣고 시각화 & 인서트 컷 가이드를 생성하세요</p>
+        <p style={{ fontSize: 13, color: C.txM, marginBottom: 16 }}>교정본 파일을 업로드하여 시각화 & 인서트 컷 가이드를 생성하세요</p>
+        <FileUploader onFileLoad={onFileUpload} busy={busy} />
+        <div style={{ margin: "16px 0", display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ flex: 1, height: 1, background: C.bd }} />
+          <span style={{ fontSize: 11, color: C.txD }}>또는 텍스트 직접 입력</span>
+          <div style={{ flex: 1, height: 1, background: C.bd }} />
+        </div>
         <textarea value={inputText} onChange={e => setInputText(e.target.value)}
           placeholder={"홍재의 00:01\n안녕하세요...\n\n게스트 00:15\n네 반갑습니다..."}
-          style={{ width: "100%", height: 300, padding: 16, borderRadius: 12, border: `1px solid ${C.bd}`, background: C.sf, color: C.tx, fontSize: 14, fontFamily: FN, resize: "vertical", outline: "none" }} />
+          style={{ width: "100%", height: 150, padding: 12, borderRadius: 10, border: `1px solid ${C.bd}`, background: C.sf, color: C.tx, fontSize: 13, fontFamily: FN, resize: "vertical", outline: "none" }} />
         <button onClick={handleLoad} disabled={!inputText.trim()}
-          style={{ marginTop: 12, width: "100%", padding: "12px", borderRadius: 10, border: "none", background: inputText.trim() ? `linear-gradient(135deg, ${C.ac}, #7C3AED)` : C.bd, color: inputText.trim() ? "#fff" : C.txD, fontSize: 15, fontWeight: 700, cursor: inputText.trim() ? "pointer" : "not-allowed" }}>
-          📄 블록 파싱 후 시작
+          style={{ marginTop: 8, width: "100%", padding: "10px", borderRadius: 8, border: "none", background: inputText.trim() ? C.ac : C.bd, color: inputText.trim() ? "#fff" : C.txD, fontSize: 13, fontWeight: 600, cursor: inputText.trim() ? "pointer" : "not-allowed" }}>
+          텍스트로 시작
         </button>
         {err && <div style={{ marginTop: 12, padding: "10px 14px", borderRadius: 8, background: "rgba(239,68,68,0.15)", color: C.err, fontSize: 13 }}>⚠️ {err}</div>}
       </div>
@@ -866,7 +1021,7 @@ export default function App() {
           {sessionId ? "↑ 업데이트" : "🔗 공유"}
         </button>
         {(visualGuides.length > 0 || insertCuts.length > 0) && <button onClick={handleClear} style={{ fontSize: 11, padding: "4px 10px", borderRadius: 5, border: `1px solid ${C.bd}`, background: "transparent", color: C.txD, cursor: "pointer" }}>🗑 초기화</button>}
-        <button onClick={() => { setLoaded(false); setBlocks([]); handleClear(); }} style={{ fontSize: 11, padding: "4px 10px", borderRadius: 5, border: `1px solid ${C.bd}`, background: "transparent", color: C.txD, cursor: "pointer" }}>← 다시 입력</button>
+        <button onClick={() => { setLoaded(false); setBlocks([]); setFn(""); setParagraphs(null); handleClear(); }} style={{ fontSize: 11, padding: "4px 10px", borderRadius: 5, border: `1px solid ${C.bd}`, background: "transparent", color: C.txD, cursor: "pointer" }}>← 다시 입력</button>
       </div>
     </header>
 
@@ -880,7 +1035,9 @@ export default function App() {
       {/* Left panel: blocks */}
       <div ref={lRef} onMouseUp={handleTextSelect} style={{ flex: 1, overflowY: "auto", borderRight: `1px solid ${C.bd}` }}>
         <div style={{ padding: "8px 16px", fontSize: 11, fontWeight: 700, color: C.txD, textTransform: "uppercase", letterSpacing: "0.08em", borderBottom: `1px solid ${C.bd}`, position: "sticky", top: 0, background: C.bg, zIndex: 2 }}>
-          교정본 · {blocks.length}블록 · 텍스트 드래그로 구간 선택
+          {fn && <span style={{ color: C.txM, fontWeight: 400, textTransform: "none" }}>📄 {fn} · </span>}
+          {paragraphs ? <span style={{ color: "#EF4444" }}>삭제선 감지 · </span> : null}
+          {blocks.length}블록 · 텍스트 드래그로 구간 선택
         </div>
         {blocks.map((b, i) => {
           const isActive = aBlock === b.index;
