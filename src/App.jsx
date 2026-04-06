@@ -130,7 +130,9 @@ function FileUploader({ onFileLoad, busy }) {
       }}>
       <input ref={inputRef} type="file" accept=".docx,.txt" style={{ display: "none" }}
         onChange={e => handleFile(e.target.files[0])} />
-      <div style={{ fontSize: 40, marginBottom: 12 }}>📄</div>
+      <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke={C.ac} strokeWidth="1.5" style={{ marginBottom: 12 }}>
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /><polyline points="10 9 9 9 8 9" />
+      </svg>
       <div style={{ fontSize: 15, fontWeight: 600, color: C.tx, marginBottom: 6 }}>
         .docx 또는 .txt 파일을 드래그하거나 클릭하여 업로드
       </div>
@@ -149,8 +151,10 @@ function parseBlocks(text) {
   const blocks = [];
   let cur = null;
 
-  // 패턴 1: "화자명 MM:SS" 줄 끝 (Clova Note 기본)
+  // 패턴 1: "화자명 MM:SS" 줄 끝
   const headerRegex = /^(.+?)\s+(\d{1,2}:\d{2}(?::\d{2})?)\s*$/;
+  // 패턴 2: "화자명 MM:SS텍스트" 또는 "화자명 MM:SS 텍스트" (공백 유무 모두)
+  const inlineRegex = /^(.{1,20}?)\s+(\d{1,2}:\d{2}(?::\d{2})?)\s*(.*)/;
 
   for (const line of lines) {
     const trimmed = line.trim();
@@ -161,15 +165,14 @@ function parseBlocks(text) {
 
     const m = trimmed.match(headerRegex);
     if (m) {
-      // "화자명 타임스탬프"만 있는 줄 → 새 블록
       if (cur && cur.text.trim()) blocks.push(cur);
       cur = { index: blocks.length, speaker: m[1].trim(), timestamp: m[2], text: "" };
     } else {
-      // 인라인: "화자명 타임스탬프 텍스트" (mammoth이 줄을 합칠 때)
-      const inlineMatch = trimmed.match(/^(.+?)\s+(\d{1,2}:\d{2}(?::\d{2})?)\s+(.+)/);
-      if (inlineMatch && inlineMatch[1].length < 20 && !/\d{2}:\d{2}/.test(inlineMatch[1])) {
+      const inlineMatch = trimmed.match(inlineRegex);
+      if (inlineMatch && !/\d{1,2}:\d{2}/.test(inlineMatch[1])) {
+        // 화자명에 타임스탬프가 포함되지 않은 경우만
         if (cur && cur.text.trim()) blocks.push(cur);
-        cur = { index: blocks.length, speaker: inlineMatch[1].trim(), timestamp: inlineMatch[2], text: inlineMatch[3] };
+        cur = { index: blocks.length, speaker: inlineMatch[1].trim(), timestamp: inlineMatch[2], text: (inlineMatch[3] || "").trim() };
       } else if (cur) {
         cur.text += (cur.text ? "\n" : "") + trimmed;
       } else {
