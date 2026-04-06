@@ -130,7 +130,7 @@ function FileUploader({ onFileLoad, busy }) {
       }}>
       <input ref={inputRef} type="file" accept=".docx,.txt" style={{ display: "none" }}
         onChange={e => handleFile(e.target.files[0])} />
-      <div style={{ fontSize: 14, fontWeight: 700, color: C.ac, marginBottom: 12, letterSpacing: 2 }}>DOCX / TXT</div>
+      <div style={{ fontSize: 40, marginBottom: 12 }}>📄</div>
       <div style={{ fontSize: 15, fontWeight: 600, color: C.tx, marginBottom: 6 }}>
         .docx 또는 .txt 파일을 드래그하거나 클릭하여 업로드
       </div>
