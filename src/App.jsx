@@ -3,6 +3,26 @@ import * as mammoth from "mammoth";
 import JSZip from "jszip";
 
 // ═══════════════════════════════════════
+// AUTH
+// ═══════════════════════════════════════
+const AUTH_URL = "https://auth.ttimes6000.workers.dev";
+function getAuthHeaders() {
+  const token = localStorage.getItem("ttimes_token");
+  return token ? { "Authorization": `Bearer ${token}` } : {};
+}
+function decodeJWT(token) {
+  try {
+    const b64 = token.split(".")[1];
+    const bytes = Uint8Array.from(atob(b64.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0));
+    return JSON.parse(new TextDecoder().decode(bytes));
+  } catch { return null; }
+}
+function handleAuthError() {
+  localStorage.removeItem("ttimes_token");
+  window.location.reload();
+}
+
+// ═══════════════════════════════════════
 // CONFIG
 // ═══════════════════════════════════════
 const WORKER_URL = "https://visual.ttimes.workers.dev";
@@ -30,9 +50,10 @@ const VIS_CATEGORIES = [
 async function apiCall(endpoint, body) {
   const r = await fetch(`${WORKER_URL}${endpoint}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...getAuthHeaders() },
     body: JSON.stringify(body),
   });
+  if (r.status === 401) { handleAuthError(); throw new Error("Unauthorized"); }
   const d = await r.json();
   if (!r.ok || d.error) throw new Error(d.error || `HTTP ${r.status}`);
   return d;
@@ -537,7 +558,7 @@ function InsertCutCard({ item, active, onClick, verdict, onVerdict, onRegenerate
 // ═══════════════════════════════════════
 // APP
 // ═══════════════════════════════════════
-export default function App() {
+function AppMain({ user, onLogout }) {
   const [inputText, setInputText] = useState("");
   const [blocks, setBlocks] = useState([]);
   const [visualGuides, setVisualGuides] = useState([]);
@@ -571,7 +592,7 @@ export default function App() {
     const params = new URLSearchParams(window.location.search);
     const sid = params.get("s");
     if (sid) {
-      fetch(`${WORKER_URL}/load/${sid}`).then(r => r.json()).then(data => {
+      fetch(`${WORKER_URL}/load/${sid}`, { headers: { ...getAuthHeaders() } }).then(r => { if (r.status === 401) { handleAuthError(); throw new Error("Unauthorized"); } return r.json(); }).then(data => {
         if (data.error) return;
         setBlocks(data.blocks || []);
         setVisualGuides(data.visualGuides || []);
@@ -585,7 +606,7 @@ export default function App() {
       }).catch(() => {});
     }
     // 세션 목록 로드
-    fetch(`${WORKER_URL}/sessions`).then(r=>r.json()).then(d=>{
+    fetch(`${WORKER_URL}/sessions`, { headers: { ...getAuthHeaders() } }).then(r=>{ if (r.status === 401) { handleAuthError(); throw new Error("Unauthorized"); } return r.json(); }).then(d=>{
       if(d.sessions) setSessions(d.sessions);
     }).catch(()=>{});
   });
@@ -594,7 +615,8 @@ export default function App() {
   const loadSession = useCallback(async (sid) => {
     setErr(null); setProg("📥 세션 불러오는 중...");
     try {
-      const r = await fetch(`${WORKER_URL}/load/${sid}`);
+      const r = await fetch(`${WORKER_URL}/load/${sid}`, { headers: { ...getAuthHeaders() } });
+      if (r.status === 401) { handleAuthError(); return; }
       const data = await r.json();
       if (data.error) { setErr(data.error); setProg(""); return; }
       setBlocks(data.blocks || []);
@@ -613,7 +635,8 @@ export default function App() {
 
   const deleteSession = useCallback(async (sid) => {
     try {
-      await fetch(`${WORKER_URL}/session-delete`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({id:sid}) });
+      const _r = await fetch(`${WORKER_URL}/session-delete`, { method:"POST", headers:{"Content-Type":"application/json", ...getAuthHeaders()}, body:JSON.stringify({id:sid}) });
+      if (_r.status === 401) { handleAuthError(); return; }
       setSessions(prev => prev?.filter(s => s.id !== sid));
     } catch {}
   }, []);
@@ -625,9 +648,10 @@ export default function App() {
       const payload = { blocks, visualGuides, insertCuts, verdicts, tab };
       if (sessionId) payload.id = sessionId;
       const r = await fetch(`${WORKER_URL}/save`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json", ...getAuthHeaders() },
         body: JSON.stringify(payload),
       });
+      if (r.status === 401) { handleAuthError(); return; }
       const d = await r.json();
       if (d.error) throw new Error(d.error);
       setSessionId(d.id);
@@ -798,7 +822,8 @@ export default function App() {
       const sj=JSON.stringify(state);if(sj===lastSavedRef.current)return;
       try{setAutoSaveStatus("saving");
         const pl={...state};if(sessionId)pl.id=sessionId;
-        const r=await fetch(`${WORKER_URL}/save`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(pl)});
+        const r=await fetch(`${WORKER_URL}/save`,{method:"POST",headers:{"Content-Type":"application/json",...getAuthHeaders()},body:JSON.stringify(pl)});
+        if(r.status===401){handleAuthError();return;}
         const d=await r.json();if(d.id&&!sessionId)setSessionId(d.id);
         lastSavedRef.current=sj;setAutoSaveStatus("saved");setTimeout(()=>setAutoSaveStatus(""),5000);
       }catch{setAutoSaveStatus("");}
@@ -876,6 +901,11 @@ export default function App() {
               boxShadow:"0 2px 8px rgba(74,108,247,0.3)"}}>
             {saving?"저장 중...":sessionId?"↑ 업데이트":"📤 공유"}</button>
         </div>}
+      <div style={{display:"flex",alignItems:"center",gap:8}}>
+        {user && <span style={{fontSize:11,color:C.txM}}>{user.name || user.email}</span>}
+        <button onClick={onLogout} style={{padding:"4px 10px",borderRadius:5,border:`1px solid ${C.bd}`,
+          background:"transparent",color:C.txD,fontSize:11,cursor:"pointer"}}>Logout</button>
+      </div>
     </header>
     {/* 공유 URL 모달 */}
     {shareUrl && (
@@ -1133,4 +1163,98 @@ export default function App() {
       body{overflow:hidden}
     `}</style>
   </div>;
+}
+
+// ═══════════════════════════════════════
+// LOGIN SCREEN
+// ═══════════════════════════════════════
+function LoginScreen({ onLogin }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setLoading(true); setError(null);
+    try {
+      const r = await fetch(`${AUTH_URL}/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      const d = await r.json();
+      if (!r.ok || d.error) throw new Error(d.error || `HTTP ${r.status}`);
+      localStorage.setItem("ttimes_token", d.token);
+      onLogin(d.token);
+    } catch (err) {
+      setError(err.message);
+    } finally { setLoading(false); }
+  };
+
+  return (
+    <div style={{height:"100vh",background:C.bg,display:"flex",alignItems:"center",justifyContent:"center",fontFamily:FN}}>
+      <style>{`
+        @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
+        *{box-sizing:border-box;margin:0;padding:0}
+        body{overflow:hidden}
+      `}</style>
+      <form onSubmit={handleSubmit} style={{background:C.sf,border:`1px solid ${C.bd}`,borderRadius:16,padding:36,width:380,
+        boxShadow:"0 8px 32px rgba(0,0,0,0.4)"}}>
+        <div style={{textAlign:"center",marginBottom:28}}>
+          <div style={{fontSize:28,fontWeight:800,color:C.tx,marginBottom:6}}>
+            <span style={{color:C.ac}}>V</span>isual Guide
+          </div>
+          <div style={{fontSize:12,color:C.txD}}>TTimes Visual Service</div>
+        </div>
+        {error && <div style={{background:"rgba(239,68,68,0.12)",border:`1px solid ${C.err}`,color:C.err,
+          borderRadius:8,padding:"8px 12px",fontSize:12,marginBottom:16,textAlign:"center"}}>{error}</div>}
+        <div style={{marginBottom:14}}>
+          <label style={{display:"block",fontSize:12,color:C.txM,marginBottom:5,fontWeight:500}}>Email</label>
+          <input type="email" value={email} onChange={e=>setEmail(e.target.value)} required
+            style={{width:"100%",padding:"10px 12px",borderRadius:8,border:`1px solid ${C.bd}`,background:C.bg,color:C.tx,
+              fontSize:14,fontFamily:FN,outline:"none"}}
+            placeholder="email@example.com"/>
+        </div>
+        <div style={{marginBottom:22}}>
+          <label style={{display:"block",fontSize:12,color:C.txM,marginBottom:5,fontWeight:500}}>Password</label>
+          <input type="password" value={password} onChange={e=>setPassword(e.target.value)} required
+            style={{width:"100%",padding:"10px 12px",borderRadius:8,border:`1px solid ${C.bd}`,background:C.bg,color:C.tx,
+              fontSize:14,fontFamily:FN,outline:"none"}}
+            placeholder="********"/>
+        </div>
+        <button type="submit" disabled={loading}
+          style={{width:"100%",padding:"11px 0",borderRadius:8,border:"none",cursor:loading?"not-allowed":"pointer",
+            background:`linear-gradient(135deg,${C.ac},#7C3AED)`,color:"#fff",fontSize:14,fontWeight:700,fontFamily:FN,
+            boxShadow:"0 4px 14px rgba(74,108,247,0.35)",opacity:loading?0.7:1,transition:"opacity 0.2s"}}>
+          {loading ? "Logging in..." : "Login"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════
+// APP (auth wrapper)
+// ═══════════════════════════════════════
+export default function App() {
+  const [token, setToken] = useState(() => localStorage.getItem("ttimes_token"));
+  const user = useMemo(() => token ? decodeJWT(token) : null, [token]);
+
+  // check expiry
+  useEffect(() => {
+    if (user && user.exp && user.exp * 1000 < Date.now()) {
+      localStorage.removeItem("ttimes_token");
+      setToken(null);
+    }
+  }, [user]);
+
+  const handleLogin = useCallback((t) => setToken(t), []);
+  const handleLogout = useCallback(() => {
+    localStorage.removeItem("ttimes_token");
+    setToken(null);
+  }, []);
+
+  if (!token || !user) return <LoginScreen onLogin={handleLogin} />;
+  return <AppMain user={user} onLogout={handleLogout} />;
 }
