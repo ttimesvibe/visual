@@ -1,0 +1,7 @@
+name = "visual"
+main = "index.js"
+compatibility_date = "2024-12-01"
+
+[[kv_namespaces]]
+binding = "SESSIONS"
+id = "1506cd4fc76b4e55b09856a6111fb9ec"
