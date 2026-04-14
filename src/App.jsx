@@ -43,6 +43,19 @@ const VIS_CATEGORIES = [
   {value:"radar",label:"🕸 레이더"},{value:"venn",label:"⭕ 벤"},{value:"network",label:"🔗 네트워크"},
   {value:"stack",label:"📚 스택"},{value:"progress",label:"📏 진행률"},{value:"checklist",label:"☑️ 체크리스트"},
 ];
+const MARKER_COLORS = {
+  yellow: { bg: "rgba(251,191,36,0.3)", border: "#FBBF24", label: "노랑" },
+  blue:   { bg: "rgba(59,130,246,0.3)", border: "#3B82F6", label: "파랑" },
+  cyan:   { bg: "rgba(34,211,238,0.3)", border: "#22D3EE", label: "하늘" },
+  red:    { bg: "rgba(239,68,68,0.3)",  border: "#EF4444", label: "빨강" },
+  pink:   { bg: "rgba(236,72,153,0.3)", border: "#EC4899", label: "분홍" },
+};
+const RES_TYPES = [
+  { value: "image", label: "🖼 이미지", color: "#3B82F6" },
+  { value: "video", label: "🎬 영상", color: "#8B5CF6" },
+  { value: "data", label: "📊 그래픽", color: "#22C55E" },
+  { value: "etc", label: "📌 기타", color: "#F59E0B" },
+];
 
 // ═══════════════════════════════════════
 // API
@@ -556,6 +569,72 @@ function InsertCutCard({ item, active, onClick, verdict, onVerdict, onRegenerate
 }
 
 // ═══════════════════════════════════════
+// MARKED TEXT (형광펜 렌더링)
+// ═══════════════════════════════════════
+function MarkedText({ text, blockIdx, hlMarkers, matchingMode, onMarkerAdd }) {
+  const textRef = useRef(null);
+  const markers = [];
+  for (const [key, m] of Object.entries(hlMarkers || {})) {
+    if (!m.ranges) continue;
+    for (const r of m.ranges) {
+      if (r.blockIdx === blockIdx) {
+        markers.push({ s: r.s, e: r.e, color: m.color, key });
+      }
+    }
+  }
+  markers.sort((a, b) => a.s - b.s);
+  const segs = [];
+  let cursor = 0;
+  for (const m of markers) {
+    const s = Math.max(m.s, cursor);
+    const e = Math.min(m.e, text.length);
+    if (s >= e) continue;
+    if (s > cursor) segs.push({ text: text.substring(cursor, s), color: null });
+    segs.push({ text: text.substring(s, e), color: m.color, key: m.key });
+    cursor = e;
+  }
+  if (cursor < text.length) segs.push({ text: text.substring(cursor), color: null });
+  if (segs.length === 0) segs.push({ text, color: null });
+  const isMatching = matchingMode && matchingMode.blockIdx === blockIdx;
+  const handleMouseUp = useCallback(() => {
+    if (!matchingMode) return;
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !textRef.current) return;
+    const container = textRef.current;
+    if (!container.contains(sel.anchorNode) || !container.contains(sel.focusNode)) return;
+    const selectedText = sel.toString();
+    if (!selectedText.trim()) return;
+    const range = sel.getRangeAt(0);
+    let startOffset = 0;
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, null, false);
+    let node;
+    let found = false;
+    while ((node = walker.nextNode())) {
+      if (node === range.startContainer) {
+        startOffset += range.startOffset;
+        found = true;
+        break;
+      }
+      startOffset += node.textContent.length;
+    }
+    if (!found) return;
+    const endOffset = startOffset + selectedText.length;
+    if (startOffset < 0 || endOffset > text.length || startOffset >= endOffset) return;
+    onMarkerAdd(matchingMode.key, matchingMode.color, blockIdx, startOffset, endOffset);
+    sel.removeAllRanges();
+  }, [matchingMode, blockIdx, onMarkerAdd, text]);
+  return <div ref={textRef} onMouseUp={handleMouseUp}
+    style={{fontSize:13,lineHeight:1.6,color:C.tx,wordBreak:"keep-all",whiteSpace:"pre-wrap",
+      cursor:isMatching?"crosshair":"inherit",transition:"all 0.15s"}}>
+    {segs.map((s, i) => s.color
+      ? <span key={i} style={{background:MARKER_COLORS[s.color]?.bg,borderRadius:3,padding:"1px 0",
+          borderBottom:`2px solid ${MARKER_COLORS[s.color]?.border}`}}>{s.text}</span>
+      : <span key={i}>{s.text}</span>
+    )}
+  </div>;
+}
+
+// ═══════════════════════════════════════
 // APP
 // ═══════════════════════════════════════
 function AppMain({ user, onLogout }) {
@@ -581,6 +660,12 @@ function AppMain({ user, onLogout }) {
 
   // 텍스트 선택 기반 구간 추천
   const [textSel, setTextSel] = useState(null);
+  const [manualResources, setManualResources] = useState([]);
+  const [visualMarkers, setVisualMarkers] = useState({});
+  const [vMatchMode, setVMatchMode] = useState(null);
+  const [resAddAt, setResAddAt] = useState(null);
+  const [resForm, setResForm] = useState({ text: "", type: "image", source: "" });
+  const [resEditing, setResEditing] = useState(null);
 
   const lRef = useRef(null);
   const rRef = useRef(null);
@@ -598,6 +683,8 @@ function AppMain({ user, onLogout }) {
         setVisualGuides(data.visualGuides || []);
         setInsertCuts(data.insertCuts || []);
         setVerdicts(data.verdicts || {});
+        setManualResources(data.manualResources || []);
+        setVisualMarkers(data.visualMarkers || {});
         setTab(data.tab || "visuals");
         setFn(data.fn || "");
         setLoaded(true);
@@ -623,6 +710,8 @@ function AppMain({ user, onLogout }) {
       setVisualGuides(data.visualGuides || []);
       setInsertCuts(data.insertCuts || []);
       setVerdicts(data.verdicts || {});
+      setManualResources(data.manualResources || []);
+      setVisualMarkers(data.visualMarkers || {});
       setTab(data.tab || "visuals");
       setFn(data.fn || "");
       setLoaded(true);
@@ -645,7 +734,7 @@ function AppMain({ user, onLogout }) {
   const handleShare = useCallback(async () => {
     setSaving(true); setErr(null);
     try {
-      const payload = { blocks, visualGuides, insertCuts, verdicts, tab };
+      const payload = { blocks, visualGuides, insertCuts, verdicts, manualResources, visualMarkers, tab };
       if (sessionId) payload.id = sessionId;
       const r = await fetch(`${WORKER_URL}/save`, {
         method: "POST", headers: { "Content-Type": "application/json", ...getAuthHeaders() },
@@ -660,7 +749,7 @@ function AppMain({ user, onLogout }) {
       window.history.replaceState({}, "", `${window.location.pathname}?s=${d.id}`);
     } catch (e) { setErr(e.message); }
     finally { setSaving(false); }
-  }, [blocks, visualGuides, insertCuts, verdicts, tab, sessionId]);
+  }, [blocks, visualGuides, insertCuts, verdicts, manualResources, visualMarkers, tab, sessionId]);
   // 텍스트 선택 감지 (mouseup 시)
   const onTextMouseUp = useCallback(() => {
     const sel = window.getSelection();
@@ -692,6 +781,83 @@ function AppMain({ user, onLogout }) {
     setTextSel(null);
     window.getSelection()?.removeAllRanges();
   }, []);
+
+  // ── 형광펜 ──
+  const handleMarkerAdd = useCallback((key, color, blockIdx, s, e) => {
+    setVisualMarkers(prev => {
+      const existing = prev[key] || { color, ranges: [] };
+      const prevRanges = existing.color === color ? existing.ranges : [];
+      const newRanges = [...prevRanges];
+      let merged = false;
+      for (let i = 0; i < newRanges.length; i++) {
+        const r = newRanges[i];
+        if (r.blockIdx === blockIdx && !(e <= r.s || s >= r.e)) {
+          newRanges[i] = { blockIdx, s: Math.min(s, r.s), e: Math.max(e, r.e) };
+          merged = true;
+          break;
+        }
+      }
+      if (!merged) newRanges.push({ blockIdx, s, e });
+      return { ...prev, [key]: { color, ranges: newRanges } };
+    });
+  }, []);
+
+  const handleMarkerClear = useCallback((key) => {
+    setVisualMarkers(prev => { const n = { ...prev }; delete n[key]; return n; });
+  }, []);
+
+  // ── 수동 자료 추가 ──
+  const handleAddResource = useCallback(() => {
+    if (resAddAt === null || !resForm.text.trim()) return;
+    const block = blocks.find(b => b.index === resAddAt);
+    const newRes = {
+      id: Date.now(),
+      block_index: resAddAt,
+      block_range: [resAddAt, resAddAt],
+      speaker: block?.speaker || "—",
+      text: resForm.text.trim(),
+      source: resForm.source.trim() || "",
+      type: resForm.type,
+      _manual: true,
+    };
+    setManualResources(prev => [...prev, newRes]);
+    setVerdicts(prev => ({ ...prev, [`res-${newRes.id}`]: "use" }));
+    setResAddAt(null);
+    setResForm({ text: "", type: "image", source: "" });
+  }, [resAddAt, resForm, blocks]);
+
+  const handleDeleteResource = useCallback((id) => {
+    setManualResources(prev => prev.filter(r => r.id !== id));
+    setVerdicts(prev => { const n = { ...prev }; delete n[`res-${id}`]; return n; });
+    handleMarkerClear(`res-${id}`);
+  }, [handleMarkerClear]);
+
+  const handleSaveResource = useCallback(() => {
+    if (!resEditing || !resEditing.text.trim()) return;
+    setManualResources(prev => prev.map(r => r.id === resEditing.id ? { ...r, text: resEditing.text.trim(), source: resEditing.source?.trim() || "", type: resEditing.type } : r));
+    setResEditing(null);
+  }, [resEditing]);
+
+  // ── verdict + 자동 형광펜 ──
+  const handleVerdictToggle = useCallback((vKey, currentVd, newVd, item, markerColor) => {
+    const finalVd = currentVd === newVd ? null : newVd;
+    setVerdicts(prev => ({ ...prev, [vKey]: finalVd }));
+    if (finalVd === "use" && item) {
+      const sourceText = item.source_text || item.trigger_quote || "";
+      if (sourceText && item.block_range) {
+        const blockIdx = item.block_range[0];
+        const block = blocks.find(b => b.index === blockIdx);
+        if (block) {
+          const idx = block.text.indexOf(sourceText);
+          if (idx >= 0) {
+            handleMarkerAdd(vKey, markerColor, blockIdx, idx, idx + sourceText.length);
+          }
+        }
+      }
+    } else if (finalVd !== "use") {
+      handleMarkerClear(vKey);
+    }
+  }, [blocks, handleMarkerAdd, handleMarkerClear]);
 
   // 선택된 텍스트로 추천 생성
   const handleTextSelGenerate = useCallback(async (mode) => {
@@ -796,18 +962,18 @@ function AppMain({ user, onLogout }) {
           if(tc.hasTrackChanges){
             const p=parseBlocks(tc.cleanText);if(p.length===0){setErr("파싱 실패");setProg("");return;}
             setBlocks(p);setInputText(tc.cleanText);setFn(file.name);setLoaded(true);
-            setVisualGuides([]);setInsertCuts([]);setVerdicts({});
+            setVisualGuides([]);setInsertCuts([]);setVerdicts({});setManualResources([]);setVisualMarkers({});setVMatchMode(null);
             setProg(`✅ ${file.name} — 삭제선 감지 (${p.length}블록)`);return;
           }
         }catch(e){console.warn("삭제선 파싱 실패:",e.message);}
         const res=await mammoth.extractRawText({arrayBuffer:buf});
         const p=parseBlocks(res.value);if(p.length===0){setErr("파싱 실패");setProg("");return;}
         setBlocks(p);setInputText(res.value);setFn(file.name);setLoaded(true);
-        setVisualGuides([]);setInsertCuts([]);setVerdicts({});setProg(`✅ ${file.name} — ${p.length}블록`);
+        setVisualGuides([]);setInsertCuts([]);setVerdicts({});setManualResources([]);setVisualMarkers({});setVMatchMode(null);setProg(`✅ ${file.name} — ${p.length}블록`);
       }else{
         const text=await file.text();const p=parseBlocks(text);if(p.length===0){setErr("파싱 실패");setProg("");return;}
         setBlocks(p);setInputText(text);setFn(file.name);setLoaded(true);
-        setVisualGuides([]);setInsertCuts([]);setVerdicts({});setProg(`✅ ${file.name} — ${p.length}블록`);
+        setVisualGuides([]);setInsertCuts([]);setVerdicts({});setManualResources([]);setVisualMarkers({});setVMatchMode(null);setProg(`✅ ${file.name} — ${p.length}블록`);
       }
     }catch(e){setErr(`파일 처리 실패: ${e.message}`);setProg("");}
   },[]);
@@ -818,7 +984,7 @@ function AppMain({ user, onLogout }) {
     if(autoSaveTimer.current)clearTimeout(autoSaveTimer.current);
     setAutoSaveStatus("pending");
     autoSaveTimer.current=setTimeout(async()=>{
-      const state={blocks,visualGuides,insertCuts,verdicts,tab,inputText,fn};
+      const state={blocks,visualGuides,insertCuts,verdicts,manualResources,visualMarkers,tab,inputText,fn};
       const sj=JSON.stringify(state);if(sj===lastSavedRef.current)return;
       try{setAutoSaveStatus("saving");
         const pl={...state};if(sessionId)pl.id=sessionId;
@@ -829,13 +995,14 @@ function AppMain({ user, onLogout }) {
       }catch{setAutoSaveStatus("");}
     },AUTOSAVE_INTERVAL);
     return()=>{if(autoSaveTimer.current)clearTimeout(autoSaveTimer.current);};
-  },[visualGuides,insertCuts,verdicts,loaded]);
+  },[visualGuides,insertCuts,verdicts,manualResources,visualMarkers,loaded]);
 
   const handleLoad = useCallback(() => {
     const parsed = parseBlocks(inputText);
     if (parsed.length === 0) { setErr("블록을 파싱할 수 없습니다."); return; }
     setBlocks(parsed); setLoaded(true); setErr(null);
     setVisualGuides([]); setInsertCuts([]); setABlock(null); setTextSel(null);
+    setManualResources([]); setVisualMarkers({}); setVMatchMode(null); setResAddAt(null);
   }, [inputText]);
 
   const handleGenerate = useCallback(async (mode) => {
@@ -869,13 +1036,13 @@ function AppMain({ user, onLogout }) {
 
   const blockHasCard = useMemo(() => {
     const set = new Set();
-    const items = tab === "visuals" ? visualGuides : insertCuts;
+    const items = tab === "visuals" ? visualGuides : tab === "inserts" ? insertCuts : manualResources;
     for (const item of items) {
-      const range = item.block_range || [];
+      const range = item.block_range || (item.block_index != null ? [item.block_index, item.block_index] : []);
       for (let i = range[0]; i <= (range[1] || range[0]); i++) set.add(i);
     }
     return set;
-  }, [tab, visualGuides, insertCuts]);
+  }, [tab, visualGuides, insertCuts, manualResources]);
 
 
   return <div style={{height:"100vh",background:C.bg,color:C.tx,fontFamily:FN,display:"flex",flexDirection:"column"}}>
@@ -886,10 +1053,10 @@ function AppMain({ user, onLogout }) {
         <span style={{fontSize:10,padding:"2px 6px",borderRadius:3,fontWeight:600,background:"rgba(34,197,94,0.15)",color:C.ok}}>v2.3</span>
       </div>
       {loaded && <div style={{display:"flex",gap:2,background:"rgba(255,255,255,0.04)",borderRadius:7,padding:2}}>
-        {[["visuals","📊 시각화"],["inserts","🎬 인서트 컷"]].map(([id,l])=>
+        {[["visuals","📊 시각화"],["inserts","🎬 인서트 컷"],["resources","📎 자료"]].map(([id,l])=>
           <button key={id} onClick={()=>setTab(id)} style={{padding:"5px 14px",borderRadius:5,border:"none",cursor:"pointer",
             fontSize:12,fontWeight:tab===id?600:400,background:tab===id?C.ac:"transparent",color:tab===id?"#fff":C.txM}}>
-            {l}{id==="visuals"&&visualGuides.length>0?` (${visualGuides.length})`:""}{id==="inserts"&&insertCuts.length>0?` (${insertCuts.length})`:""}
+            {l}{id==="visuals"&&visualGuides.length>0?` (${visualGuides.length})`:""}{id==="inserts"&&insertCuts.length>0?` (${insertCuts.length})`:""}{id==="resources"&&manualResources.length>0?` (${manualResources.length})`:""}
           </button>)}
       </div>}
       {loaded && <div style={{display:"flex",gap:6,alignItems:"center"}}>
@@ -980,10 +1147,25 @@ function AppMain({ user, onLogout }) {
         <div style={{flex:1,display:"flex",overflow:"hidden",position:"relative"}}>
           {/* 왼쪽: 블록 뷰 (텍스트 선택으로 구간 추천) */}
           <div ref={lRef} onMouseUp={onTextMouseUp} style={{flex:1,overflowY:"auto",borderRight:`1px solid ${C.bd}`}}>
+            {/* 형광펜 모드 상태 바 */}
+            {vMatchMode && (() => {
+              const _mc = MARKER_COLORS[vMatchMode.color];
+              const solidBg = {yellow:"#3D3520",blue:"#1E2A3D",cyan:"#1A3038",red:"#3D1E1E",pink:"#3D1E2E"}[vMatchMode.color]||"#2D2A1E";
+              return <div style={{position:"sticky",top:0,zIndex:5,padding:"6px 16px",
+                background:solidBg,
+                borderBottom:`2px solid ${_mc?.border||"#FBBF24"}`,
+                display:"flex",alignItems:"center",gap:8}}>
+                <span style={{fontSize:12,fontWeight:600,color:C.tx}}>🖍 형광펜 모드 — 블록 #{vMatchMode.blockIdx}에서 드래그로 구간 선택</span>
+                <span style={{flex:1}}/>
+                <button onClick={()=>setVMatchMode(null)}
+                  style={{fontSize:11,fontWeight:600,padding:"3px 10px",borderRadius:5,border:`1px solid ${_mc?.border||C.bd}`,
+                    background:"rgba(255,255,255,0.12)",color:C.tx,cursor:"pointer"}}>완료</button>
+              </div>;
+            })()}
             <div style={{padding:"8px 16px",fontSize:11,fontWeight:700,color:C.txD,borderBottom:`1px solid ${C.bd}`,
-              position:"sticky",top:0,background:C.bg,zIndex:2,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              position:"sticky",top:vMatchMode?38:0,background:C.bg,zIndex:2,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
               <span>{fn&&`📄 ${fn} · `}교정본 ({blocks.length}블록) — <span style={{fontWeight:400}}>텍스트 드래그로 구간 추천</span></span>
-              <button onClick={()=>{setLoaded(false);setBlocks([]);setVisualGuides([]);setInsertCuts([]);setABlock(null);setTextSel(null);setFn("");setSessionId(null);setAutoSaveStatus("");window.history.replaceState({},"",window.location.pathname)}}
+              <button onClick={()=>{setLoaded(false);setBlocks([]);setVisualGuides([]);setInsertCuts([]);setABlock(null);setTextSel(null);setFn("");setSessionId(null);setAutoSaveStatus("");setManualResources([]);setVisualMarkers({});setVMatchMode(null);setResAddAt(null);window.history.replaceState({},"",window.location.pathname)}}
                 style={{fontSize:10,padding:"2px 8px",borderRadius:4,border:`1px solid ${C.bd}`,background:"transparent",color:C.txM,cursor:"pointer"}}>새로 입력</button>
             </div>
             {blocks.map(b => {
@@ -993,10 +1175,12 @@ function AppMain({ user, onLogout }) {
               // "사용" 판정된 카드들 찾기
               const usedVisuals = visualGuides.filter(v => (v.block_range||[])[0] === b.index && verdicts[`vis-${v.id}`] === "use");
               const usedCuts = insertCuts.filter(ic => (ic.block_range||[])[0] === b.index && verdicts[`ic-${ic.id}`] === "use");
+              const usedResources = manualResources.filter(r => r.block_index === b.index && verdicts[`res-${r.id}`] === "use");
+              const isMatchBlock = vMatchMode && vMatchMode.blockIdx === b.index;
               return <div key={b.index}>
               <div ref={el=>{if(el)bEls.current[b.index]=el}}
                 onClick={()=>{ if(!window.getSelection()?.toString().trim()) scrollTo(b.index); }}
-                style={{padding:"10px 16px",borderBottom:`1px solid ${C.bd}22`,cursor:"text",transition:"all 0.1s",
+                style={{padding:"10px 16px",borderBottom:`1px solid ${C.bd}22`,cursor:isMatchBlock?"crosshair":"text",transition:"all 0.1s",
                   borderLeft:`4px solid ${inSel?"#F59E0B":isActive?"#A855F7":hasCard?"#3B82F644":"transparent"}`,
                   background:inSel?"rgba(245,158,11,0.06)":isActive?"rgba(168,85,247,0.08)":"transparent"}}>
                 <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4}}>
@@ -1006,10 +1190,13 @@ function AppMain({ user, onLogout }) {
                   <span style={{fontSize:11,fontWeight:600,color:isActive?C.ac:C.txM}}>{b.speaker}</span>
                   <span style={{fontSize:11,color:C.txD,fontFamily:"monospace"}}>{b.timestamp}</span>
                   {hasCard && <span style={{fontSize:9,padding:"1px 5px",borderRadius:3,
-                    background:tab==="visuals"?"rgba(59,130,246,0.12)":"rgba(245,158,11,0.12)",
-                    color:tab==="visuals"?"#3B82F6":"#F59E0B"}}>{tab==="visuals"?"📊":"🎬"}</span>}
+                    background:tab==="visuals"?"rgba(59,130,246,0.12)":tab==="resources"?"rgba(249,115,22,0.12)":"rgba(245,158,11,0.12)",
+                    color:tab==="visuals"?"#3B82F6":tab==="resources"?"#F97316":"#F59E0B"}}>{tab==="visuals"?"📊":tab==="resources"?"📎":"🎬"}</span>}
                 </div>
-                <div style={{fontSize:13,color:C.tx,lineHeight:1.6,whiteSpace:"pre-wrap"}}>{b.text}</div>
+                <MarkedText text={b.text} blockIdx={b.index}
+                  hlMarkers={visualMarkers}
+                  matchingMode={vMatchMode && vMatchMode.blockIdx === b.index ? vMatchMode : null}
+                  onMarkerAdd={handleMarkerAdd}/>
               </div>
               {/* 인라인: "사용" 판정된 시각화 카드 */}
               {usedVisuals.map(v => (
@@ -1037,6 +1224,84 @@ function AppMain({ user, onLogout }) {
                   </div>
                 </div>;
               })}
+              {/* 인라인: 사용 수동 자료 (형광펜 팔레트 포함) */}
+              {usedResources.map(r => {
+                const rKey=`res-${r.id}`;
+                const rMarker=visualMarkers[rKey]; const rMarkerColor=rMarker?.color;
+                const rMc=rMarkerColor?MARKER_COLORS[rMarkerColor]:null;
+                const rActiveMatch=vMatchMode?.key===rKey;
+                return <div key={`inline-res-${r.id}`} style={{margin:"2px 16px 4px",padding:"10px 14px",borderRadius:8,
+                  border:`1px solid ${rMc?rMc.border:"rgba(249,115,22,0.4)"}`,
+                  background:rMc?rMc.bg.replace("0.3","0.08"):"rgba(249,115,22,0.06)",
+                  boxShadow:rActiveMatch?`0 0 0 2px ${rMc?.border||C.ac}`:"none"}}>
+                  <div style={{display:"flex",alignItems:"flex-start",gap:8}}>
+                    <span style={{fontSize:13,color:"#F97316",fontWeight:700,flexShrink:0}}>📎</span>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:13,fontWeight:600,color:"#F97316",lineHeight:1.6}}>{r.text}</div>
+                      {r.source && <div style={{fontSize:12,color:C.txM,lineHeight:1.5,marginTop:2}}>출처: {r.source}</div>}
+                    </div>
+                  </div>
+                  {/* 형광펜 팔레트 */}
+                  <div style={{display:"flex",alignItems:"center",gap:3,marginTop:6,paddingTop:6,borderTop:`1px solid ${C.bd}22`}}>
+                    <span style={{fontSize:9,color:C.txD,marginRight:2}}>🖍</span>
+                    {Object.entries(MARKER_COLORS).map(([ck,cv])=>
+                      <button key={ck} onClick={e=>{e.stopPropagation();
+                        if(rActiveMatch&&vMatchMode.color===ck) setVMatchMode(null);
+                        else setVMatchMode({key:rKey,color:ck,blockIdx:r.block_index});}}
+                        title={`${cv.label} 형광펜`}
+                        style={{width:16,height:16,borderRadius:3,cursor:"pointer",transition:"all 0.12s",
+                          border:`2px solid ${rActiveMatch&&vMatchMode?.color===ck?"#fff":rMarkerColor===ck?cv.border:"transparent"}`,
+                          background:cv.bg.replace("0.3","0.6"),
+                          boxShadow:rActiveMatch&&vMatchMode?.color===ck?"0 0 4px rgba(255,255,255,0.5)":"none"}}/>)}
+                    {rMarker&&<button onClick={e=>{e.stopPropagation();handleMarkerClear(rKey);setVMatchMode(null)}}
+                      title="형광펜 지우기"
+                      style={{fontSize:9,lineHeight:1,padding:"2px 4px",border:`1px solid ${C.bd}`,borderRadius:3,
+                        background:"rgba(255,255,255,0.06)",color:C.txD,cursor:"pointer"}}>✕</button>}
+                  </div>
+                </div>;
+              })}
+              {/* 자료 추가 버튼 */}
+              {isActive && resAddAt !== b.index && (
+                <div style={{padding:"4px 16px 6px",display:"flex",justifyContent:"flex-end",gap:6}}>
+                  <button onClick={e=>{e.stopPropagation();setResAddAt(b.index);setResForm({text:"",type:"image",source:""});}}
+                    style={{fontSize:11,fontWeight:600,padding:"4px 12px",borderRadius:6,
+                      border:`1px dashed #F97316`,background:"rgba(249,115,22,0.08)",
+                      color:"#F97316",cursor:"pointer"}}>📎 자료 추가</button>
+                </div>
+              )}
+              {/* 자료 추가 폼 */}
+              {resAddAt === b.index && (
+                <div onClick={e=>e.stopPropagation()} style={{margin:"0 16px 10px",padding:12,borderRadius:10,
+                  border:"1px solid #F97316",background:"rgba(249,115,22,0.06)"}}>
+                  <div style={{display:"flex",gap:4,marginBottom:8}}>
+                    {RES_TYPES.map(rt=>
+                      <button key={rt.value} onClick={()=>setResForm(f=>({...f,type:rt.value}))}
+                        style={{fontSize:11,fontWeight:600,padding:"3px 10px",borderRadius:5,cursor:"pointer",
+                          border:`1px solid ${resForm.type===rt.value?rt.color:"transparent"}`,
+                          background:resForm.type===rt.value?`${rt.color}22`:"rgba(255,255,255,0.04)",
+                          color:resForm.type===rt.value?rt.color:C.txD}}>{rt.label}</button>)}
+                  </div>
+                  <textarea value={resForm.text} onChange={e=>setResForm(f=>({...f,text:e.target.value}))}
+                    placeholder="자료 내용/메모 (예: 관련 기사 캡쳐, 매출 그래픽 등)"
+                    rows={2} autoFocus
+                    style={{width:"100%",padding:"6px 8px",borderRadius:6,border:`1px solid ${C.bd}`,
+                      background:"rgba(0,0,0,0.3)",color:C.tx,fontSize:13,fontFamily:FN,
+                      lineHeight:1.5,resize:"vertical",outline:"none"}}/>
+                  <input value={resForm.source} onChange={e=>setResForm(f=>({...f,source:e.target.value}))}
+                    placeholder="출처 (선택사항)"
+                    style={{width:"100%",padding:"6px 8px",marginTop:6,borderRadius:6,border:`1px solid ${C.bd}`,
+                      background:"rgba(0,0,0,0.3)",color:C.tx,fontSize:12,fontFamily:FN,outline:"none"}}
+                    onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();handleAddResource();}if(e.key==="Escape")setResAddAt(null);}}/>
+                  <div style={{display:"flex",gap:4,marginTop:6,justifyContent:"flex-end"}}>
+                    <button onClick={()=>setResAddAt(null)}
+                      style={{fontSize:11,padding:"3px 10px",borderRadius:4,border:`1px solid ${C.bd}`,
+                        background:"transparent",color:C.txM,cursor:"pointer"}}>취소</button>
+                    <button onClick={handleAddResource}
+                      style={{fontSize:11,padding:"3px 10px",borderRadius:4,border:"none",
+                        background:"#F97316",color:"#fff",fontWeight:600,cursor:"pointer"}}>추가</button>
+                  </div>
+                </div>
+              )}
               </div>;
             })}
           </div>
@@ -1068,7 +1333,7 @@ function AppMain({ user, onLogout }) {
           {/* 오른쪽: 결과 패널 */}
           <div ref={rRef} style={{width:440,minWidth:440,overflowY:"auto",background:"rgba(0,0,0,0.12)"}}>
             <div style={{padding:"10px 14px",borderBottom:`1px solid ${C.bd}`,position:"sticky",top:0,background:C.sf,zIndex:2}}>
-              <div style={{display:"flex",gap:4}}>
+              {tab !== "resources" ? <div style={{display:"flex",gap:4}}>
                 <button onClick={()=>handleGenerate("visuals")} disabled={busy}
                   style={{flex:1,fontSize:11,fontWeight:600,padding:"8px 10px",borderRadius:6,border:"none",cursor:busy?"not-allowed":"pointer",
                     background:busy?"rgba(59,130,246,0.3)":"rgba(59,130,246,0.8)",color:"#fff"}}>
@@ -1077,14 +1342,17 @@ function AppMain({ user, onLogout }) {
                   style={{flex:1,fontSize:11,fontWeight:600,padding:"8px 10px",borderRadius:6,border:"none",cursor:busy?"not-allowed":"pointer",
                     background:busy?"rgba(245,158,11,0.3)":"rgba(245,158,11,0.8)",color:"#fff"}}>
                   {busy&&tab==="inserts"?"생성 중...":"🎬 전체 인서트 컷 생성"}</button>
-              </div>
-              {(visualGuides.length>0||insertCuts.length>0) && <div style={{display:"flex",gap:4,marginTop:4}}>
+              </div> : <div style={{fontSize:12,color:C.txM,padding:"6px 0"}}>📎 왼쪽 패널에서 블록 선택 후 자료를 추가하세요</div>}
+              {(visualGuides.length>0||insertCuts.length>0||manualResources.length>0) && <div style={{display:"flex",gap:4,marginTop:4}}>
                 {visualGuides.length>0&&tab==="visuals"&&<button onClick={()=>setVisualGuides([])}
                   style={{fontSize:10,padding:"3px 8px",borderRadius:4,border:`1px solid ${C.bd}`,background:"transparent",color:C.txD,cursor:"pointer"}}>
                   🗑 초기화 ({visualGuides.length}건)</button>}
                 {insertCuts.length>0&&tab==="inserts"&&<button onClick={()=>setInsertCuts([])}
                   style={{fontSize:10,padding:"3px 8px",borderRadius:4,border:`1px solid ${C.bd}`,background:"transparent",color:C.txD,cursor:"pointer"}}>
                   🗑 초기화 ({insertCuts.length}건)</button>}
+                {manualResources.length>0&&tab==="resources"&&<button onClick={()=>setManualResources([])}
+                  style={{fontSize:10,padding:"3px 8px",borderRadius:4,border:`1px solid ${C.bd}`,background:"transparent",color:C.txD,cursor:"pointer"}}>
+                  🗑 초기화 ({manualResources.length}건)</button>}
               </div>}
             </div>
             <div style={{padding:"6px 10px"}}>
@@ -1147,6 +1415,91 @@ function AppMain({ user, onLogout }) {
                     <InsertCutCard item={ic} active={aBlock===blockIdx} onClick={scrollTo}
                       verdict={vd} onVerdict={v=>setVerdicts(prev=>({...prev,[vKey]:vd===v?null:v}))}
                       onRegenerate={()=>handleRegenerate(ic,"inserts")} busy={busy}/></div>;
+                })}
+              </>}
+              {tab==="resources" && <>
+                {manualResources.length===0&&<p style={{padding:30,textAlign:"center",fontSize:12,color:C.txD}}>📎 왼쪽 패널에서 블록 선택 → "📎 자료 추가" 버튼으로 수동 자료를 추가하세요</p>}
+                {manualResources.map((r,i)=>{
+                  const blockIdx=r.block_index; const isActive=aBlock===blockIdx;
+                  const rKey=`res-${r.id}`; const vd=verdicts[rKey]||null;
+                  const rMarker=visualMarkers[rKey]; const rMarkerColor=rMarker?.color;
+                  const rMc=rMarkerColor?MARKER_COLORS[rMarkerColor]:null;
+                  const rActiveMatch=vMatchMode?.key===rKey;
+                  const rtInfo=RES_TYPES.find(rt=>rt.value===r.type)||RES_TYPES[0];
+                  const borderC=vd==="use"?"#22C55E":vd==="discard"?"rgba(239,68,68,0.4)":isActive?"#F97316":C.bd;
+                  const cardBg=vd==="discard"?"rgba(239,68,68,0.05)":isActive?"rgba(249,115,22,0.08)":C.sf;
+                  return <div key={`res-${r.id||i}`} data-card-block={blockIdx}
+                    onClick={()=>scrollTo(blockIdx)}
+                    style={{border:`1px solid ${borderC}`,borderRadius:10,padding:"10px 12px",marginBottom:8,
+                      background:cardBg,cursor:"pointer",transition:"all 0.15s",opacity:vd==="discard"?0.5:1,
+                      boxShadow:rActiveMatch?`0 0 0 2px ${rMc?.border||C.ac}`:isActive&&!vd?"0 0 0 2px rgba(249,115,22,0.3)":"none"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4}}>
+                      <span style={{fontSize:13}}>📎</span>
+                      <span style={{fontSize:9,fontWeight:700,padding:"1px 6px",borderRadius:3,background:`${rtInfo.color}22`,color:rtInfo.color}}>{rtInfo.label}</span>
+                      {r.speaker&&<span style={{fontSize:10,color:C.txM}}>{r.speaker}</span>}
+                      <span style={{flex:1}}/>
+                      <button onClick={e=>{e.stopPropagation();setResEditing({...r});}}
+                        style={{fontSize:9,fontWeight:600,padding:"2px 6px",borderRadius:4,cursor:"pointer",
+                          border:`1px solid ${C.bd}`,background:"rgba(255,255,255,0.04)",color:C.txD}}>✏️</button>
+                      <button onClick={e=>{e.stopPropagation();handleDeleteResource(r.id);}}
+                        style={{fontSize:9,fontWeight:600,padding:"2px 6px",borderRadius:4,cursor:"pointer",
+                          border:`1px solid ${C.bd}`,background:"rgba(255,255,255,0.04)",color:C.txD}}>🗑</button>
+                      <span style={{fontSize:10,color:C.txD,fontFamily:"monospace"}}>#{blockIdx}</span>
+                    </div>
+                    {resEditing && resEditing.id === r.id ? (
+                      <div onClick={e=>e.stopPropagation()} style={{marginBottom:6}}>
+                        <div style={{display:"flex",gap:4,marginBottom:6}}>
+                          {RES_TYPES.map(rt=>
+                            <button key={rt.value} onClick={()=>setResEditing(prev=>({...prev,type:rt.value}))}
+                              style={{fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:4,cursor:"pointer",
+                                border:`1px solid ${resEditing.type===rt.value?rt.color:"transparent"}`,
+                                background:resEditing.type===rt.value?`${rt.color}22`:"rgba(255,255,255,0.04)",
+                                color:resEditing.type===rt.value?rt.color:C.txD}}>{rt.label}</button>)}
+                        </div>
+                        <textarea value={resEditing.text} onChange={e=>setResEditing(prev=>({...prev,text:e.target.value}))}
+                          rows={2} style={{width:"100%",padding:"6px 8px",borderRadius:6,border:`1px solid ${C.bd}`,
+                            background:"rgba(0,0,0,0.3)",color:C.tx,fontSize:12,fontFamily:FN,lineHeight:1.5,resize:"vertical",outline:"none"}}/>
+                        <input value={resEditing.source||""} onChange={e=>setResEditing(prev=>({...prev,source:e.target.value}))}
+                          placeholder="출처" style={{width:"100%",padding:"4px 8px",marginTop:4,borderRadius:6,border:`1px solid ${C.bd}`,
+                            background:"rgba(0,0,0,0.3)",color:C.tx,fontSize:11,fontFamily:FN,outline:"none"}}/>
+                        <div style={{display:"flex",gap:4,marginTop:4,justifyContent:"flex-end"}}>
+                          <button onClick={()=>setResEditing(null)}
+                            style={{fontSize:10,padding:"2px 8px",borderRadius:4,border:`1px solid ${C.bd}`,background:"transparent",color:C.txM,cursor:"pointer"}}>취소</button>
+                          <button onClick={handleSaveResource}
+                            style={{fontSize:10,padding:"2px 8px",borderRadius:4,border:"none",background:"#F97316",color:"#fff",fontWeight:600,cursor:"pointer"}}>저장</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{fontSize:13,fontWeight:600,color:C.tx,marginBottom:4,textDecoration:vd==="discard"?"line-through":"none"}}>{r.text}</div>
+                    )}
+                    {r.source && <div style={{fontSize:11,color:C.txD,marginBottom:4}}>출처: {r.source}</div>}
+                    <div style={{display:"flex",alignItems:"center",gap:4,marginTop:4}}>
+                      <div style={{display:"flex",gap:3}}>
+                        {[{k:"use",l:"사용",c:"#22C55E",bg:"rgba(34,197,94,0.15)"},{k:"discard",l:"폐기",c:"#EF4444",bg:"rgba(239,68,68,0.15)"}].map(o=>
+                          <button key={o.k} onClick={e=>{e.stopPropagation();setVerdicts(prev=>({...prev,[rKey]:vd===o.k?null:o.k}))}}
+                            style={{fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:4,cursor:"pointer",transition:"all 0.1s",
+                              border:`1px solid ${vd===o.k?o.c:"transparent"}`,background:vd===o.k?o.bg:"rgba(255,255,255,0.04)",
+                              color:vd===o.k?o.c:C.txD}}>{o.l}</button>)}
+                      </div>
+                    </div>
+                    {/* 형광펜 팔레트 */}
+                    <div style={{display:"flex",alignItems:"center",gap:3,marginTop:6,paddingTop:6,borderTop:`1px solid ${C.bd}44`}}>
+                      <span style={{fontSize:9,color:C.txD,marginRight:2}}>🖍</span>
+                      {Object.entries(MARKER_COLORS).map(([ck,cv])=>
+                        <button key={ck} onClick={e=>{e.stopPropagation();
+                          if(rActiveMatch&&vMatchMode.color===ck) setVMatchMode(null);
+                          else setVMatchMode({key:rKey,color:ck,blockIdx:r.block_index});}}
+                          title={`${cv.label} 형광펜`}
+                          style={{width:16,height:16,borderRadius:3,cursor:"pointer",transition:"all 0.12s",
+                            border:`2px solid ${rActiveMatch&&vMatchMode?.color===ck?"#fff":rMarkerColor===ck?cv.border:"transparent"}`,
+                            background:cv.bg.replace("0.3","0.6"),
+                            boxShadow:rActiveMatch&&vMatchMode?.color===ck?"0 0 4px rgba(255,255,255,0.5)":"none"}}/>)}
+                      {rMarker&&<button onClick={e=>{e.stopPropagation();handleMarkerClear(rKey);setVMatchMode(null)}}
+                        title="형광펜 지우기"
+                        style={{fontSize:9,lineHeight:1,padding:"2px 4px",border:`1px solid ${C.bd}`,borderRadius:3,
+                          background:"rgba(255,255,255,0.06)",color:C.txD,cursor:"pointer"}}>✕</button>}
+                    </div>
+                  </div>;
                 })}
               </>}
             </div>
